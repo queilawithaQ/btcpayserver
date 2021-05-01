@@ -1,3 +1,8 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
 namespace BTCPayServer.Views.Wallets
 {
     public enum WalletsNavPages
@@ -6,9 +11,7 @@ namespace BTCPayServer.Views.Wallets
         Transactions,
         Rescan,
         PSBT,
-        PullPayments,
-        Payouts,
         Settings,
-        Receive
+        AtomicSwaps
     }
 }

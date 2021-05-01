@@ -1,33 +1,30 @@
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Net.Http;
-using System.Runtime.CompilerServices;
-using System.Threading.Tasks;
-using BTCPayServer.Lightning;
-using BTCPayServer.Lightning.CLightning;
-using BTCPayServer.Payments.Lightning;
-using BTCPayServer.Tests.Lnd;
-using BTCPayServer.Tests.Logging;
+﻿using System.Linq;
 using NBitcoin;
 using NBitcoin.RPC;
 using NBitpayClient;
 using NBXplorer;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Http;
+using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
+using System.Globalization;
+using BTCPayServer.Tests.Lnd;
+using BTCPayServer.Lightning;
+using BTCPayServer.Tests.Logging;
 
 namespace BTCPayServer.Tests
 {
     public class ServerTester : IDisposable
     {
-        public static ServerTester Create([CallerMemberNameAttribute] string scope = null, bool newDb = false)
+        public static ServerTester Create([CallerMemberNameAttribute]string scope = null)
         {
-            return new ServerTester(scope, newDb);
+            return new ServerTester(scope);
         }
 
-        public List<IDisposable> Resources = new List<IDisposable>();
-        readonly string _Directory;
-        public ServerTester(string scope, bool newDb)
+        string _Directory;
+        public ServerTester(string scope)
         {
             _Directory = scope;
             if (Directory.Exists(_Directory))
@@ -35,7 +32,7 @@ namespace BTCPayServer.Tests
             if (!Directory.Exists(_Directory))
                 Directory.CreateDirectory(_Directory);
 
-            NetworkProvider = new BTCPayNetworkProvider(ChainName.Regtest);
+            NetworkProvider = new BTCPayNetworkProvider(NetworkType.Regtest);
             ExplorerNode = new RPCClient(RPCCredentialString.Parse(GetEnvironment("TESTS_BTCRPCCONNECTION", "server=http://127.0.0.1:43782;ceiwHEbqWI83:DwubwWsoo3")), NetworkProvider.GetNetwork<BTCPayNetwork>("BTC").NBitcoinNetwork);
             ExplorerNode.ScanRPCCapabilities();
 
@@ -45,18 +42,9 @@ namespace BTCPayServer.Tests
             {
                 NBXplorerUri = ExplorerClient.Address,
                 TestDatabase = Enum.Parse<TestDatabases>(GetEnvironment("TESTS_DB", TestDatabases.Postgres.ToString()), true),
-                // TODO: The fact that we use same conn string as development database can cause huge problems with tests
-                // since in dev we already can have some users / stores registered, while on CI database is being initalized
-                // for the first time and first registered user gets admin status by default
                 Postgres = GetEnvironment("TESTS_POSTGRES", "User ID=postgres;Host=127.0.0.1;Port=39372;Database=btcpayserver"),
                 MySQL = GetEnvironment("TESTS_MYSQL", "User ID=root;Host=127.0.0.1;Port=33036;Database=btcpayserver")
             };
-            if (newDb)
-            {
-                var r = RandomUtils.GetUInt32();
-                PayTester.Postgres = PayTester.Postgres.Replace("btcpayserver", $"btcpayserver{r}");
-                PayTester.MySQL = PayTester.MySQL.Replace("btcpayserver", $"btcpayserver{r}");
-            }
             PayTester.Port = int.Parse(GetEnvironment("TESTS_PORT", Utils.FreeTcpPort().ToString(CultureInfo.InvariantCulture)), CultureInfo.InvariantCulture);
             PayTester.HostName = GetEnvironment("TESTS_HOSTNAME", "127.0.0.1");
             PayTester.InContainer = bool.Parse(GetEnvironment("TESTS_INCONTAINER", "false"));
@@ -64,9 +52,8 @@ namespace BTCPayServer.Tests
             PayTester.SSHPassword = GetEnvironment("TESTS_SSHPASSWORD", "opD3i2282D");
             PayTester.SSHKeyFile = GetEnvironment("TESTS_SSHKEYFILE", "");
             PayTester.SSHConnection = GetEnvironment("TESTS_SSHCONNECTION", "root@127.0.0.1:21622");
-            PayTester.SocksEndpoint = GetEnvironment("TESTS_SOCKSENDPOINT", "localhost:9050");
         }
-#if ALTCOINS
+
         public void ActivateLTC()
         {
             LTCExplorerNode = new RPCClient(RPCCredentialString.Parse(GetEnvironment("TESTS_LTCRPCCONNECTION", "server=http://127.0.0.1:43783;ceiwHEbqWI83:DwubwWsoo3")), NetworkProvider.GetNetwork<BTCPayNetwork>("LTC").NBitcoinNetwork);
@@ -81,57 +68,16 @@ namespace BTCPayServer.Tests
             PayTester.Chains.Add("LBTC");
             PayTester.LBTCNBXplorerUri = LBTCExplorerClient.Address;
         }
-        public void ActivateETH()
-        {
-            PayTester.Chains.Add("ETH");
-        }
 
-#endif
         public void ActivateLightning()
-        {
-            ActivateLightning(LightningConnectionType.Charge);
-        }
-        public void ActivateLightning(LightningConnectionType internalNode)
         {
             var btc = NetworkProvider.GetNetwork<BTCPayNetwork>("BTC").NBitcoinNetwork;
             CustomerLightningD = LightningClientFactory.CreateClient(GetEnvironment("TEST_CUSTOMERLIGHTNINGD", "type=clightning;server=tcp://127.0.0.1:30992/"), btc);
             MerchantLightningD = LightningClientFactory.CreateClient(GetEnvironment("TEST_MERCHANTLIGHTNINGD", "type=clightning;server=tcp://127.0.0.1:30993/"), btc);
-            MerchantCharge = new ChargeTester(this, "TEST_MERCHANTCHARGE", "type=charge;server=http://127.0.0.1:54938/;api-token=foiewnccewuify;allowinsecure=true", "merchant_lightningd", btc);
-            MerchantLnd = new LndMockTester(this, "TEST_MERCHANTLND", "http://lnd:lnd@127.0.0.1:35531/", "merchant_lnd", btc);
+            MerchantCharge = new ChargeTester(this, "TEST_MERCHANTCHARGE", "type=charge;server=http://127.0.0.1:54938/;api-token=foiewnccewuify", "merchant_lightningd", btc);
+            MerchantLnd = new LndMockTester(this, "TEST_MERCHANTLND", "https://lnd:lnd@127.0.0.1:53280/", "merchant_lnd", btc);
             PayTester.UseLightning = true;
-            PayTester.IntegratedLightning = GetLightningConnectionString(internalNode, true);
-        }
-        public string GetLightningConnectionString(LightningConnectionType? connectionType, bool isMerchant)
-        {
-            string connectionString = null;
-            if (connectionType is null)
-                return LightningSupportedPaymentMethod.InternalNode;
-            if (connectionType == LightningConnectionType.Charge)
-            {
-                if (isMerchant)
-                    connectionString = $"type=charge;server={MerchantCharge.Client.Uri.AbsoluteUri};allowinsecure=true";
-                else
-                    throw new NotSupportedException();
-            }
-            else if (connectionType == LightningConnectionType.CLightning)
-            {
-                if (isMerchant)
-                    connectionString = "type=clightning;server=" +
-                                       ((CLightningClient)MerchantLightningD).Address.AbsoluteUri;
-                else
-                    connectionString = "type=clightning;server=" +
-                                   ((CLightningClient)CustomerLightningD).Address.AbsoluteUri;
-            }
-            else if (connectionType == LightningConnectionType.LndREST)
-            {
-                if (isMerchant)
-                    connectionString = $"type=lnd-rest;server={MerchantLnd.Swagger.BaseUrl};allowinsecure=true";
-                else
-                    throw new NotSupportedException();
-            }
-            else
-                throw new NotSupportedException(connectionType.ToString());
-            return connectionString;
+            PayTester.IntegratedLightning = MerchantCharge.Client.Uri;
         }
 
         public bool Dockerized
@@ -151,7 +97,6 @@ namespace BTCPayServer.Tests
         public async Task EnsureChannelsSetup()
         {
             Logs.Tester.LogInformation("Connecting channels");
-            BTCPayServer.Lightning.Tests.ConnectChannels.Logs = Logs.LogProvider.CreateLogger("Connect channels");
             await BTCPayServer.Lightning.Tests.ConnectChannels.ConnectAll(ExplorerNode, GetLightningSenderClients(), GetLightningDestClients()).ConfigureAwait(false);
             Logs.Tester.LogInformation("Channels connected");
         }
@@ -179,24 +124,6 @@ namespace BTCPayServer.Tests
             await CustomerLightningD.Pay(bolt11);
         }
 
-        public async Task<T> WaitForEvent<T>(Func<Task> action, Func<T, bool> correctEvent = null)
-        {
-            var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var sub = PayTester.GetService<EventAggregator>().Subscribe<T>(evt =>
-            {
-                if (correctEvent is null)
-                    tcs.TrySetResult(evt);
-                else if (correctEvent(evt))
-                {
-                    tcs.TrySetResult(evt);
-                }
-            });
-            await action.Invoke();
-            var result = await tcs.Task;
-            sub.Dispose();
-            return result;
-        }
-
         public ILightningClient CustomerLightningD { get; set; }
 
         public ILightningClient MerchantLightningD { get; private set; }
@@ -219,23 +146,22 @@ namespace BTCPayServer.Tests
         {
             get; set;
         }
-#if ALTCOINS
+
         public RPCClient LTCExplorerNode
         {
             get; set;
         }
-
+        
         public RPCClient LBTCExplorerNode { get; set; }
-        public ExplorerClient LTCExplorerClient { get; set; }
-        public ExplorerClient LBTCExplorerClient { get; set; }
-#endif
 
         public ExplorerClient ExplorerClient
         {
             get; set;
         }
+        public ExplorerClient LTCExplorerClient { get; set; }
+        public ExplorerClient LBTCExplorerClient { get; set; }
 
-        readonly HttpClient _Http = new HttpClient();
+        HttpClient _Http = new HttpClient();
 
         public BTCPayServerTester PayTester
         {
@@ -246,8 +172,6 @@ namespace BTCPayServer.Tests
 
         public void Dispose()
         {
-            foreach (var r in this.Resources)
-                r.Dispose();
             Logs.Tester.LogInformation("Disposing the BTCPayTester...");
             foreach (var store in Stores)
             {
