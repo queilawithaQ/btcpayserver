@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using BTCPayServer.BIP78.Sender;
 using BTCPayServer.Data;
 using BTCPayServer.Events;
 using BTCPayServer.Filters;
@@ -13,7 +12,6 @@ using BTCPayServer.HostedServices;
 using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Services;
 using BTCPayServer.Services.Invoices;
-using BTCPayServer.Services.Labels;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Wallets;
 using Microsoft.AspNetCore.Cors;
@@ -83,31 +81,39 @@ namespace BTCPayServer.Payments.PayJoin
         private readonly BTCPayNetworkProvider _btcPayNetworkProvider;
         private readonly InvoiceRepository _invoiceRepository;
         private readonly ExplorerClientProvider _explorerClientProvider;
+        private readonly StoreRepository _storeRepository;
         private readonly BTCPayWalletProvider _btcPayWalletProvider;
         private readonly PayJoinRepository _payJoinRepository;
         private readonly EventAggregator _eventAggregator;
         private readonly NBXplorerDashboard _dashboard;
         private readonly DelayedTransactionBroadcaster _broadcaster;
+        private readonly WalletRepository _walletRepository;
         private readonly BTCPayServerEnvironment _env;
+        private readonly InvoiceLogsService _invoiceLogsService;
 
         public PayJoinEndpointController(BTCPayNetworkProvider btcPayNetworkProvider,
             InvoiceRepository invoiceRepository, ExplorerClientProvider explorerClientProvider,
-            BTCPayWalletProvider btcPayWalletProvider,
+            StoreRepository storeRepository, BTCPayWalletProvider btcPayWalletProvider,
             PayJoinRepository payJoinRepository,
             EventAggregator eventAggregator,
             NBXplorerDashboard dashboard,
             DelayedTransactionBroadcaster broadcaster,
-            BTCPayServerEnvironment env)
+            WalletRepository walletRepository,
+            BTCPayServerEnvironment env,
+            InvoiceLogsService invoiceLogsService)
         {
             _btcPayNetworkProvider = btcPayNetworkProvider;
             _invoiceRepository = invoiceRepository;
             _explorerClientProvider = explorerClientProvider;
+            _storeRepository = storeRepository;
             _btcPayWalletProvider = btcPayWalletProvider;
             _payJoinRepository = payJoinRepository;
             _eventAggregator = eventAggregator;
             _dashboard = dashboard;
             _broadcaster = broadcaster;
+            _walletRepository = walletRepository;
             _env = env;
+            _invoiceLogsService = invoiceLogsService;
         }
 
         [HttpPost("")]
@@ -136,7 +142,7 @@ namespace BTCPayServer.Payments.PayJoin
                 });
             }
 
-            await using var ctx = new PayjoinReceiverContext(_invoiceRepository, _explorerClientProvider.GetExplorerClient(network), _payJoinRepository);
+            await using var ctx = new PayjoinReceiverContext(_invoiceRepository, _explorerClientProvider.GetExplorerClient(network), _payJoinRepository, _invoiceLogsService);
             ObjectResult CreatePayjoinErrorAndLog(int httpCode, PayjoinReceiverWellknownErrors err, string debug)
             {
                 ctx.Logs.Write($"Payjoin error: {debug}", InvoiceEventData.EventSeverity.Error);
@@ -250,7 +256,7 @@ namespace BTCPayServer.Payments.PayJoin
                     continue;
 
                 var receiverInputsType = derivationSchemeSettings.AccountDerivation.ScriptPubKeyType();
-                if (receiverInputsType == ScriptPubKeyType.Legacy)
+                if (!PayjoinClient.SupportedFormats.Contains(receiverInputsType))
                 {
                     //this should never happen, unless the store owner changed the wallet mid way through an invoice
                     return CreatePayjoinErrorAndLog(503, PayjoinReceiverWellknownErrors.Unavailable, "Our wallet does not support payjoin");
@@ -280,8 +286,6 @@ namespace BTCPayServer.Payments.PayJoin
 
                 if (!await _payJoinRepository.TryLockInputs(ctx.OriginalTransaction.Inputs.Select(i => i.PrevOut).ToArray()))
                 {
-                    // We do not broadcast, since we might double spend a delayed transaction of a previous payjoin
-                    ctx.DoNotBroadcast();
                     return CreatePayjoinErrorAndLog(503, PayjoinReceiverWellknownErrors.Unavailable, "Some of those inputs have already been used to make another payjoin transaction");
                 }
 
@@ -347,12 +351,13 @@ namespace BTCPayServer.Payments.PayJoin
                 && feeOutputIndex < newTx.Outputs.Count
                 && !isOurOutput.Contains(newTx.Outputs[feeOutputIndex])
                 ? newTx.Outputs[feeOutputIndex] : null;
+            var rand = new Random();
             int senderInputCount = newTx.Inputs.Count;
             foreach (var selectedUTXO in selectedUTXOs.Select(o => o.Value))
             {
                 contributedAmount += (Money)selectedUTXO.Value;
                 var newInput = newTx.Inputs.Add(selectedUTXO.Outpoint);
-                newInput.Sequence = newTx.Inputs[(int)(RandomUtils.GetUInt32() % senderInputCount)].Sequence;
+                newInput.Sequence = newTx.Inputs[rand.Next(0, senderInputCount)].Sequence;
             }
             ourNewOutput.Value += contributedAmount;
             var minRelayTxFee = this._dashboard.Get(network.CryptoCode).Status.BitcoinStatus?.MinRelayTxFee ??
@@ -460,8 +465,8 @@ namespace BTCPayServer.Payments.PayJoin
             {
                 WalletId = new WalletId(invoice.StoreId, network.CryptoCode),
                 TransactionLabels = selectedUTXOs.GroupBy(pair => pair.Key.Hash).Select(utxo =>
-                       new KeyValuePair<uint256, List<(string color, Label label)>>(utxo.Key,
-                           new List<(string color, Label label)>()
+                       new KeyValuePair<uint256, List<(string color, string label)>>(utxo.Key,
+                           new List<(string color, string label)>()
                            {
                                 UpdateTransactionLabel.PayjoinExposedLabelTemplate(invoice.Id)
                            }))

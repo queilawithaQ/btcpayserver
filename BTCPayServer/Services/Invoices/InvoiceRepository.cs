@@ -221,23 +221,6 @@ namespace BTCPayServer.Services.Invoices
             return temp.GetBlob(_Networks);
         }
 
-        public async Task AddInvoiceLogs(string invoiceId, InvoiceLogs logs)
-        {
-            await using var context = _ContextFactory.CreateContext();
-            foreach (var log in logs.ToList())
-            {
-                await context.InvoiceEvents.AddAsync(new InvoiceEventData()
-                {
-                    Severity = log.Severity,
-                    InvoiceDataId = invoiceId,
-                    Message = log.Log,
-                    Timestamp = log.Timestamp,
-                    UniqueId = Encoders.Hex.EncodeData(RandomUtils.GetBytes(10))
-                });
-            }
-            await context.SaveChangesAsync().ConfigureAwait(false);
-        }
-
         private string GetDestination(PaymentMethod paymentMethod)
         {
             // For legacy reason, BitcoinLikeOnChain is putting the hashes of addresses in database

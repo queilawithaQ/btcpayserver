@@ -44,10 +44,8 @@ namespace BTCPayServer.Controllers
         private readonly PaymentMethodHandlerDictionary _paymentMethodHandlerDictionary;
         private readonly ApplicationDbContextFactory _dbContextFactory;
         private readonly PullPaymentHostedService _paymentHostedService;
+        private readonly InvoiceLogsService _invoiceLogsService;
         readonly IServiceProvider _ServiceProvider;
-
-        public WebhookNotificationManager WebhookNotificationManager { get; }
-
         public InvoiceController(
             IServiceProvider serviceProvider,
             InvoiceRepository invoiceRepository,
@@ -61,7 +59,7 @@ namespace BTCPayServer.Controllers
             PaymentMethodHandlerDictionary paymentMethodHandlerDictionary,
             ApplicationDbContextFactory dbContextFactory,
             PullPaymentHostedService paymentHostedService,
-            WebhookNotificationManager webhookNotificationManager)
+            InvoiceLogsService invoiceLogsService)
         {
             _ServiceProvider = serviceProvider;
             _CurrencyNameTable = currencyNameTable ?? throw new ArgumentNullException(nameof(currencyNameTable));
@@ -74,7 +72,7 @@ namespace BTCPayServer.Controllers
             _paymentMethodHandlerDictionary = paymentMethodHandlerDictionary;
             _dbContextFactory = dbContextFactory;
             _paymentHostedService = paymentHostedService;
-            WebhookNotificationManager = webhookNotificationManager;
+            _invoiceLogsService = invoiceLogsService;
             _CSP = csp;
         }
 
@@ -98,7 +96,8 @@ namespace BTCPayServer.Controllers
             {
                 throw new BitpayHttpException(400, "The expirationTime is set too soon");
             }
-            invoice.Currency = invoice.Currency?.Trim().ToUpperInvariant() ?? "USD";
+            invoice.Currency = invoice.Currency?.ToUpperInvariant() ?? "USD";
+            entity.Currency = invoice.Currency;
             entity.Metadata.OrderId = invoice.OrderId;
             entity.Metadata.PosData = invoice.PosData;
             entity.ServerUrl = serverUrl;
@@ -168,12 +167,9 @@ namespace BTCPayServer.Controllers
             if (invoice.Metadata != null)
                 entity.Metadata = InvoiceMetadata.FromJObject(invoice.Metadata);
             invoice.Checkout ??= new CreateInvoiceRequest.CheckoutOptions();
-            invoice.Currency = invoice.Currency?.Trim().ToUpperInvariant() ?? "USD";
             entity.Currency = invoice.Currency;
             entity.Price = invoice.Amount;
             entity.SpeedPolicy = invoice.Checkout.SpeedPolicy ?? store.SpeedPolicy;
-            entity.DefaultLanguage = invoice.Checkout.DefaultLanguage;
-            entity.RedirectAutomatically = invoice.Checkout.RedirectAutomatically ?? storeBlob.RedirectAutomatically;
             IPaymentFilter excludeFilter = null;
             if (invoice.Checkout.PaymentMethods != null)
             {
@@ -183,7 +179,6 @@ namespace BTCPayServer.Controllers
                 excludeFilter = PaymentFilter.Where(p => !supportedTransactionCurrencies.Contains(p));
             }
             entity.PaymentTolerance = invoice.Checkout.PaymentTolerance ?? storeBlob.PaymentTolerance;
-            entity.RedirectURLTemplate = invoice.Checkout.RedirectURL?.Trim();
             if (additionalTags != null)
                 entity.InternalTags.AddRange(additionalTags);
             return await CreateInvoiceCoreRaw(entity, store, excludeFilter, cancellationToken);
@@ -203,7 +198,7 @@ namespace BTCPayServer.Controllers
                     throw new BitpayHttpException(400, "Invalid email");
                 entity.RefundMail = entity.Metadata.BuyerEmail;
             }
-            entity.Status = InvoiceStatusLegacy.New;
+            entity.Status = InvoiceStatus.New;
             HashSet<CurrencyPair> currencyPairsToFetch = new HashSet<CurrencyPair>();
             var rules = storeBlob.GetRateRules(_NetworkProvider);
             var excludeFilter = storeBlob.GetExcludedPaymentMethods(); // Here we can compose filters from other origin with PaymentFilter.Any()
@@ -218,12 +213,12 @@ namespace BTCPayServer.Controllers
                                                 .Where(c => c != null))
             {
                 currencyPairsToFetch.Add(new CurrencyPair(network.CryptoCode, entity.Currency));
-                foreach (var paymentMethodCriteria in storeBlob.PaymentMethodCriteria)
+                foreach (var paymentMethodCriteria in store.GetPaymentMethodCriteria(_NetworkProvider, storeBlob))
                 {
                     if (paymentMethodCriteria.Value != null)
                     {
                         currencyPairsToFetch.Add(new CurrencyPair(network.CryptoCode, paymentMethodCriteria.Value.Currency));
-                    }
+                    }   
                 }
             }
 
@@ -288,7 +283,7 @@ namespace BTCPayServer.Controllers
                 {
                     ex.Handle(e => { logs.Write($"Error while fetching rates {ex}", InvoiceEventData.EventSeverity.Error); return true; });
                 }
-                await _InvoiceRepository.AddInvoiceLogs(entity.Id, logs);
+                _invoiceLogsService.AddInvoiceLogs(entity.Id, logs);
             });
             _EventAggregator.Publish(new Events.InvoiceEvent(entity, InvoiceEvent.Created));
             return entity;
@@ -313,9 +308,7 @@ namespace BTCPayServer.Controllers
             }).ToArray());
         }
 
-        private async Task<PaymentMethod> CreatePaymentMethodAsync(Dictionary<CurrencyPair, Task<RateResult>> fetchingByCurrencyPair,
-            IPaymentMethodHandler handler, ISupportedPaymentMethod supportedPaymentMethod, BTCPayNetworkBase network, InvoiceEntity entity,
-            StoreData store, InvoiceLogs logs)
+        private async Task<PaymentMethod> CreatePaymentMethodAsync(Dictionary<CurrencyPair, Task<RateResult>> fetchingByCurrencyPair, IPaymentMethodHandler handler, ISupportedPaymentMethod supportedPaymentMethod, BTCPayNetworkBase network, InvoiceEntity entity, StoreData store, InvoiceLogs logs)
         {
             try
             {
@@ -327,14 +320,12 @@ namespace BTCPayServer.Controllers
                 {
                     return null;
                 }
-                var paymentMethod = new PaymentMethod
-                {
-                    ParentEntity = entity,
-                    Network = network,
-                    Rate = rate.BidAsk.Bid,
-                    PreferOnion = Uri.TryCreate(entity.ServerUrl, UriKind.Absolute, out var u) && u.DnsSafeHost.EndsWith(".onion", StringComparison.OrdinalIgnoreCase)
-                };
+                PaymentMethod paymentMethod = new PaymentMethod();
+                paymentMethod.ParentEntity = entity;
+                paymentMethod.Network = network;
                 paymentMethod.SetId(supportedPaymentMethod.PaymentId);
+                paymentMethod.Rate = rate.BidAsk.Bid;
+                paymentMethod.PreferOnion = Uri.TryCreate(entity.ServerUrl, UriKind.Absolute, out var u) && u.DnsSafeHost.EndsWith(".onion", StringComparison.OrdinalIgnoreCase);
 
                 using (logs.Measure($"{logPrefix} Payment method details creation"))
                 {
@@ -342,7 +333,7 @@ namespace BTCPayServer.Controllers
                     paymentMethod.SetPaymentMethodDetails(paymentDetails);
                 }
 
-                var criteria = storeBlob.PaymentMethodCriteria?.Find(methodCriteria => methodCriteria.PaymentMethod == supportedPaymentMethod.PaymentId);
+                var criteria = store.GetPaymentMethodCriteria(_NetworkProvider, storeBlob)?.Find(methodCriteria => methodCriteria.PaymentMethod == supportedPaymentMethod.PaymentId);
                 if (criteria?.Value != null)
                 {
                     var currentRateToCrypto =
@@ -351,7 +342,7 @@ namespace BTCPayServer.Controllers
                     {
                         var amount = paymentMethod.Calculate().Due.GetValue(network as BTCPayNetwork);
                         var limitValueCrypto = criteria.Value.Value / currentRateToCrypto.BidAsk.Bid;
-
+                        
                         if (amount < limitValueCrypto && criteria.Above)
                         {
                             logs.Write($"{logPrefix} invoice amount below accepted value for payment method", InvoiceEventData.EventSeverity.Error);
@@ -381,7 +372,7 @@ namespace BTCPayServer.Controllers
             }
             catch (Exception ex)
             {
-                logs.Write($"{supportedPaymentMethod.PaymentId.CryptoCode}: Unexpected exception ({ex})", InvoiceEventData.EventSeverity.Error);
+                logs.Write($"{supportedPaymentMethod.PaymentId.CryptoCode}: Unexpected exception ({ex.ToString()})", InvoiceEventData.EventSeverity.Error);
             }
             return null;
         }

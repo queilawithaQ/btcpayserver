@@ -94,6 +94,8 @@ namespace BTCPayServer.Hosting
                     Directory.CreateDirectory(dbpath);
                 return new InvoiceRepository(dbContext, dbpath, o.GetRequiredService<BTCPayNetworkProvider>());
             });
+            services.AddSingleton<InvoiceLogsService>();
+            services.AddSingleton<IHostedService>(provider => provider.GetService<InvoiceLogsService>() );
             services.AddSingleton<BTCPayServerEnvironment>();
             services.TryAddSingleton<TokenRepository>();
             services.TryAddSingleton<WalletRepository>();
