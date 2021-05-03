@@ -2,10 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using BTCPayServer.Abstractions.Contracts;
-using BTCPayServer.Abstractions.Extensions;
-using BTCPayServer.Abstractions.Models;
 using BTCPayServer.Configuration;
+using BTCPayServer.Contracts;
 using BTCPayServer.Models;
 using BTCPayServer.Plugins;
 using Microsoft.AspNetCore.Http;
@@ -39,7 +37,6 @@ namespace BTCPayServer.Controllers
                 Installed = pluginService.LoadedPlugins,
                 Available = availablePlugins,
                 Commands = pluginService.GetPendingCommands(),
-                Disabled = pluginService.GetDisabledPlugins(),
                 CanShowRestart = btcPayServerOptions.DockerDeployment
             };
             return View(res);
@@ -51,7 +48,6 @@ namespace BTCPayServer.Controllers
             public IEnumerable<PluginService.AvailablePlugin> Available { get; set; }
             public (string command, string plugin)[] Commands { get; set; }
             public bool CanShowRestart { get; set; }
-            public string[] Disabled { get; set; }
         }
 
         [HttpPost("server/plugins/uninstall")]
@@ -83,20 +79,12 @@ namespace BTCPayServer.Controllers
 
         [HttpPost("server/plugins/install")]
         public async Task<IActionResult> InstallPlugin(
-            [FromServices] PluginService pluginService, string plugin , bool update = false)
+            [FromServices] PluginService pluginService, string plugin)
         {
             try
             {
                 await pluginService.DownloadRemotePlugin(plugin);
-                if (update)
-                {
-                    pluginService.UpdatePlugin(plugin);
-                }
-                else
-                {
-                    
-                    pluginService.InstallPlugin(plugin);
-                }
+                pluginService.InstallPlugin(plugin);
                 TempData.SetStatusMessageModel(new StatusMessageModel()
                 {
                     Message = "Plugin scheduled to be installed.",
@@ -119,7 +107,7 @@ namespace BTCPayServer.Controllers
         public async Task<IActionResult> UploadPlugin([FromServices] PluginService pluginService,
             List<IFormFile> files)
         {
-            foreach (var formFile in files.Where(file => file.Length > 0).Where(file => file.FileName.IsValidFileName()))
+            foreach (var formFile in files.Where(file => file.Length > 0))
             {
                 await pluginService.UploadPlugin(formFile);
                 pluginService.InstallPlugin(formFile.FileName.TrimEnd(PluginManager.BTCPayPluginSuffix,
