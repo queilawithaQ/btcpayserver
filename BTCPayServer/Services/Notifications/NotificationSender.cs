@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using BTCPayServer.Abstractions.Contracts;
+using BTCPayServer.Contracts;
 using BTCPayServer.Data;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -13,10 +13,6 @@ namespace BTCPayServer.Services.Notifications
     public class UserNotificationsUpdatedEvent
     {
         public string UserId { get; set; }
-        public override string ToString()
-        {
-            return string.Empty;
-        }
     }
     public class NotificationSender
     {
@@ -38,7 +34,7 @@ namespace BTCPayServer.Services.Notifications
             if (notification == null)
                 throw new ArgumentNullException(nameof(notification));
             var users = await GetUsers(scope, notification.Identifier);
-            await using (var db = _contextFactory.CreateContext())
+            using (var db = _contextFactory.CreateContext())
             {
                 foreach (var uid in users)
                 {
@@ -52,7 +48,7 @@ namespace BTCPayServer.Services.Notifications
                         Blob = ZipUtils.Zip(obj),
                         Seen = false
                     };
-                    await db.Notifications.AddAsync(data);
+                    db.Notifications.Add(data);
                 }
                 await db.SaveChangesAsync();
             }
@@ -99,11 +95,7 @@ namespace BTCPayServer.Services.Notifications
             query = query.Where(store => store.DisabledNotifications != "all");
             foreach (string term in terms)
             {
-                // Cannot specify StringComparison as EF core does not support it and would attempt client-side evaluation 
-                // ReSharper disable once CA1307
-#pragma warning disable CA1307 // Specify StringComparison
                 query = query.Where(user => user.DisabledNotifications == null ||  !user.DisabledNotifications.Contains(term));
-#pragma warning restore CA1307 // Specify StringComparison
             }
 
             return query.Select(user => user.Id).ToArray();
