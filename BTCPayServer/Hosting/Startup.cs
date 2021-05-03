@@ -1,8 +1,10 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using BTCPayServer.Configuration;
 using BTCPayServer.Data;
+using BTCPayServer.Fido2;
 using BTCPayServer.Filters;
 using BTCPayServer.Logging;
 using BTCPayServer.PaymentRequest;
@@ -10,11 +12,11 @@ using BTCPayServer.Plugins;
 using BTCPayServer.Security;
 using BTCPayServer.Services.Apps;
 using BTCPayServer.Storage;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.Cookies;
+using Fido2NetLib;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -55,29 +57,34 @@ namespace BTCPayServer.Hosting
             services.AddIdentity<ApplicationUser, IdentityRole>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddDefaultTokenProviders();
-            services.Configure<AuthenticationOptions>(opts =>
-            {
-                opts.DefaultAuthenticateScheme = null;
-                opts.DefaultChallengeScheme = null;
-                opts.DefaultForbidScheme = null;
-                opts.DefaultScheme = IdentityConstants.ApplicationScheme;
-                opts.DefaultSignInScheme = null;
-                opts.DefaultSignOutScheme = null;
-            });
-            services.PostConfigure<CookieAuthenticationOptions>(IdentityConstants.ApplicationScheme, opt =>
-            {
-                opt.LoginPath = "/login";
-            });
-
-            services.Configure<SecurityStampValidatorOptions>(opts =>
-            {
-                opts.ValidationInterval = TimeSpan.FromMinutes(5.0);
-            });
 
             services.AddBTCPayServer(Configuration);
             services.AddProviderStorage();
             services.AddSession();
             services.AddSignalR();
+            services.AddFido2(options =>
+                {
+                    options.ServerName = "BTCPay Server";
+                })
+                .AddCachedMetadataService(config =>
+                {
+                    //They'll be used in a "first match wins" way in the order registered
+                    config.AddStaticMetadataRepository();
+                });
+            var descriptor =services.Single(descriptor => descriptor.ServiceType == typeof(Fido2Configuration));
+            services.Remove(descriptor);
+            services.AddTransient<Fido2Configuration>(provider =>
+            {
+                var httpContext = provider.GetService<IHttpContextAccessor>();
+                return new Fido2Configuration()
+                {
+                    ServerName = "BTCPay Server",
+                    Origin = $"{httpContext.HttpContext.Request.Scheme}://{httpContext.HttpContext.Request.Host}",
+                    ServerDomain = httpContext.HttpContext.Request.Host.Host
+                };
+            });
+            services.AddScoped<Fido2Service>();
+            
             var mvcBuilder= services.AddMvc(o =>
             {
                 o.Filters.Add(new XFrameOptionsAttribute("DENY"));
@@ -210,6 +217,7 @@ namespace BTCPayServer.Hosting
             forwardingOptions.ForwardedHeaders = ForwardedHeaders.All;
             app.UseForwardedHeaders(forwardingOptions);
 
+
             app.UseStatusCodePagesWithReExecute("/Error/Handle", "?statusCode={0}");
 
             app.UsePayServer();
@@ -234,11 +242,6 @@ namespace BTCPayServer.Hosting
 
             app.UseWebSockets();
 
-            app.UseCookiePolicy(new CookiePolicyOptions()
-            {
-                HttpOnly = Microsoft.AspNetCore.CookiePolicy.HttpOnlyPolicy.Always,
-                Secure = Microsoft.AspNetCore.Http.CookieSecurePolicy.SameAsRequest
-            });
             app.UseEndpoints(endpoints =>
             {
                 AppHub.Register(endpoints);
