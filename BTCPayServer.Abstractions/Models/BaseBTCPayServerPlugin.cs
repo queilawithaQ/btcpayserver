@@ -1,10 +1,10 @@
 using System;
 using System.Reflection;
-using BTCPayServer.Abstractions.Contracts;
+using BTCPayServer.Contracts;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace BTCPayServer.Abstractions.Models
+namespace BTCPayServer.Models
 {
     public abstract class BaseBTCPayServerPlugin : IBTCPayServerPlugin
     {
@@ -21,6 +21,7 @@ namespace BTCPayServer.Abstractions.Models
 
         public abstract string Description { get; }
         public bool SystemPlugin { get; set; }
+        public bool SystemExtension { get; set; }
         public virtual IBTCPayServerPlugin.PluginDependency[] Dependencies { get; } = Array.Empty<IBTCPayServerPlugin.PluginDependency>();
 
         public virtual void Execute(IApplicationBuilder applicationBuilder,
