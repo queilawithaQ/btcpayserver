@@ -11,7 +11,7 @@
     var shopifyCredsSet = Model?.IntegratedAt.HasValue is true;
     var shopifyUrl = Model?.ShopifyUrl;
 }
-<form method="post" id="shopifyForm">
+<form method="post" id="shopifyForm" asp-action="UpdateShopify" asp-route-storeId="@this.Context.GetRouteValue("storeId")">
     <h4 class="mb-3">
         Shopify
         <a href="https://docs.btcpayserver.org/Shopify" target="_blank">

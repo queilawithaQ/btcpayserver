@@ -15,12 +15,10 @@
     </div>
 }
 
-<ul class="list-group mb-3">
-    <vc:ui-extension-point location="store-integrations-list"></vc:ui-extension-point>
-</ul>
-
 <div class="row">
-    <div class="col-12">
+    <div class="col-md-8">
+        <partial name="Integrations/Shopify"/>
+        <partial name="Integrations/Webhooks"/>
         <h4 class="mb-3 mt-5">
             Other Integrations
         </h4>
@@ -41,9 +39,21 @@
                 </li>
             </ul>
         </p>
+
     </div>
 </div>
 
+
 @section Scripts {
     @await Html.PartialAsync("_ValidationScriptsPartial")
+    <style>
+        .remove-btn {
+            font-size: 1.5rem;
+            border-radius: 0;
+        }
+
+        .remove-btn:hover {
+            background-color: #CCCCCC;
+        }
+    </style>
 }

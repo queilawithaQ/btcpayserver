@@ -1,13 +1,13 @@
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using static BTCPayServer.Data.StoreBlob;
+using BTCPayServer.Client.Models;
+using BTCPayServer.Services.Shopify.Models;
 
 namespace BTCPayServer.Models.StoreViewModels
 {
     public class IntegrationsViewModel
     {
+        public ShopifySettings Shopify { get; set; }
+        public string EventPublicKey { get; set; }
+        public List<WebhookSubscription> Webhooks { get; set; } = new List<WebhookSubscription>();
     }
 }
